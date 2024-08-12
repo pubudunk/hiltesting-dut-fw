@@ -35,7 +35,10 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
+#define TASK_CAN_COMM		0
+#define TASK_I2C_COMM		1
 
+typedef void (*FuncPtr)(void *);
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -44,10 +47,21 @@
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
+CAN_HandleTypeDef hcan1;
+
 TIM_HandleTypeDef htim7;
 
 /* USER CODE BEGIN PV */
 SemaphoreHandle_t xLogMutex;
+
+#define MAX_DUT_TASKS	2
+
+TaskHandle_t xtaskHandles[MAX_DUT_TASKS];
+static FuncPtr taskFuntions[MAX_DUT_TASKS] = { vCANComm_Handler
+		, vI2CComm_Handler };
+
+static const char * taskNames[MAX_DUT_TASKS] = { "vCANComm_Handler"
+		, "vI2CComm_Handler" };
 
 /* USER CODE END PV */
 
@@ -55,7 +69,10 @@ SemaphoreHandle_t xLogMutex;
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_TIM7_Init(void);
+static void MX_CAN1_Init(void);
 /* USER CODE BEGIN PFP */
+
+extern void vCANComm_Handler(void *pvParam);
 
 /* USER CODE END PFP */
 
@@ -97,15 +114,10 @@ int main(void)
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_TIM7_Init();
+  MX_CAN1_Init();
   /* USER CODE BEGIN 2 */
 
   vFirmware_Init();
-
-  //xReturned = xTaskCreate(vTask1_Handler, "Task-1", 200, "Hello world from Task-1", 2, &xTask1Handle);
-  //configASSERT(pdPASS == xReturned);
-
-  //xReturned = xTaskCreate(vTask2_Handler, "Task-2", 200, "Hello world from Task-2", 2, &xTask2Handle);
-  //configASSERT(pdPASS == xReturned);
 
   // start the scheduler
   vTaskStartScheduler();
@@ -168,6 +180,43 @@ void SystemClock_Config(void)
   {
     Error_Handler();
   }
+}
+
+/**
+  * @brief CAN1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_CAN1_Init(void)
+{
+
+  /* USER CODE BEGIN CAN1_Init 0 */
+
+  /* USER CODE END CAN1_Init 0 */
+
+  /* USER CODE BEGIN CAN1_Init 1 */
+	/* 250 Kbps bus */
+  /* USER CODE END CAN1_Init 1 */
+  hcan1.Instance = CAN1;
+  hcan1.Init.Prescaler = 10;
+  hcan1.Init.Mode = CAN_MODE_NORMAL;
+  hcan1.Init.SyncJumpWidth = CAN_SJW_1TQ;
+  hcan1.Init.TimeSeg1 = CAN_BS1_8TQ;
+  hcan1.Init.TimeSeg2 = CAN_BS2_1TQ;
+  hcan1.Init.TimeTriggeredMode = DISABLE;
+  hcan1.Init.AutoBusOff = DISABLE;
+  hcan1.Init.AutoWakeUp = DISABLE;
+  hcan1.Init.AutoRetransmission = DISABLE;
+  hcan1.Init.ReceiveFifoLocked = DISABLE;
+  hcan1.Init.TransmitFifoPriority = DISABLE;
+  if (HAL_CAN_Init(&hcan1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN CAN1_Init 2 */
+
+  /* USER CODE END CAN1_Init 2 */
+
 }
 
 /**
@@ -290,13 +339,13 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : B5_Pin R4_Pin R5_Pin */
-  GPIO_InitStruct.Pin = B5_Pin|R4_Pin|R5_Pin;
+  /*Configure GPIO pin : B5_Pin */
+  GPIO_InitStruct.Pin = B5_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   GPIO_InitStruct.Alternate = GPIO_AF14_LTDC;
-  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+  HAL_GPIO_Init(B5_GPIO_Port, &GPIO_InitStruct);
 
   /*Configure GPIO pins : Blinking_LED_Pin Button_LED_Pin ACP_RST_Pin */
   GPIO_InitStruct.Pin = Blinking_LED_Pin|Button_LED_Pin|ACP_RST_Pin;
@@ -487,14 +536,30 @@ static void MX_GPIO_Init(void)
 
 void vFirmware_Init(void)
 {
-	HAL_StatusTypeDef     status;
+	HAL_StatusTypeDef status = HAL_ERROR;
+	BaseType_t xReturned = pdFAIL;
 
 	xLogMutex = xSemaphoreCreateRecursiveMutex();
 	configASSERT( xLogMutex != NULL );
 
-  /* Start timer 7 */
-  status = HAL_TIM_Base_Start_IT(&htim7);
-  configASSERT(HAL_OK == status);
+	/* Start timer 7 */
+	status = HAL_TIM_Base_Start_IT(&htim7);
+	configASSERT(HAL_OK == status);
+
+	xReturned = xTaskCreate(taskFuntions[TASK_CAN_COMM]
+			, taskNames[TASK_CAN_COMM]
+			, (2 * configMINIMAL_STACK_SIZE)
+			, NULL
+			, tskIDLE_PRIORITY + 1,
+			&xtaskHandles[TASK_CAN_COMM]);
+	configASSERT( pdPASS == xReturned );
+
+	/* Activate CAN1 */
+	status = HAL_CAN_ActivateNotification(&hcan1, CAN_IT_TX_MAILBOX_EMPTY | CAN_IT_RX_FIFO0_MSG_PENDING | CAN_IT_BUSOFF);		/* Activate interrupt */
+	configASSERT(HAL_OK == status);
+
+	status = HAL_CAN_Start(&hcan1);	/* Move the CAN controller to Normal mode */
+	configASSERT(HAL_OK == status);
 
 	Add_To_Log("Firmware Init complete\n");
 }
@@ -517,6 +582,44 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
             last_interrupt_time = current_interrupt_time;
         }
     }
+}
+
+void HAL_CAN_TxMailbox0CompleteCallback(CAN_HandleTypeDef *hcan)
+{
+	printf("Message Transmitted MB0\n");
+}
+void HAL_CAN_TxMailbox1CompleteCallback(CAN_HandleTypeDef *hcan)
+{
+	printf("Message Transmitted MB1\n");
+}
+
+void HAL_CAN_TxMailbox2CompleteCallback(CAN_HandleTypeDef *hcan)
+{
+	printf("Message Transmitted MB2\n");
+}
+
+void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan)
+{
+
+	printf("RxFifo0 Message Pending\n");
+	/*
+	HAL_StatusTypeDef ret = 0;
+	CAN_RxHeaderTypeDef sRxHdr = {0};
+	uint8_t ucRxBuf[5] = {0};
+
+	ret = HAL_CAN_GetRxMessage( &hcan1, CAN_RX_FIFO0, &sRxHdr, ucRxBuf );
+	if( ret != HAL_OK ) {
+		ErrorHandler();
+	}
+
+	Log_Message("CAN Message Received: ");
+	Log_Message((const char*)ucRxBuf);
+	Log_Message("\n");*/
+}
+
+void HAL_CAN_ErrorCallback(CAN_HandleTypeDef *hcan)
+{
+	printf("CAN Error: %lX\n", hcan->ErrorCode);
 }
 
 /* USER CODE END 4 */

@@ -9,9 +9,8 @@
 #define INC_TASK_HANDLERS_H_
 
 
-void vTask1_Handler(void *pvParam);
-void vTask2_Handler(void *pvParam);
-
+void vCANComm_Handler( void *pvParam );
+void vI2CComm_Handler( void *pvParam );
 
 
 #endif /* INC_TASK_HANDLERS_H_ */
